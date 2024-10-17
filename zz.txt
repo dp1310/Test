@@ -1,0 +1,444 @@
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.concurrent.*;
+import java.util.Map;
+
+// Interface for logging capability
+interface LoggerCapability {
+    void writeToLog(String content, String category);
+}
+
+// Logger implementation that can be composed into any class
+class LoggerComponent implements LoggerCapability {
+    private final FileWriterManager fileWriter;
+    private final String category;
+    private final String threadContext;
+    
+    public LoggerComponent(String filePath, String category) {
+        this.fileWriter = FileWriterFactory.getManager(filePath);
+        this.category = category;
+        this.threadContext = ThreadContext.getContext();
+    }
+    
+    @Override
+    public void writeToLog(String content, String subCategory) {
+        String formattedContent = String.format("[%s][%s][%s] %s - %s",
+            category,
+            subCategory,
+            threadContext,
+            java.time.LocalDateTime.now(),
+            content);
+        fileWriter.writeContent(formattedContent);
+    }
+}
+
+// Thread context manager to track request context
+class ThreadContext {
+    private static final ThreadLocal<String> contextHolder = new ThreadLocal<>();
+    
+    public static void setContext(String context) {
+        contextHolder.set(context);
+    }
+    
+    public static String getContext() {
+        String context = contextHolder.get();
+        return context != null ? context : "DEFAULT";
+    }
+    
+    public static void clear() {
+        contextHolder.remove();
+    }
+}
+
+// Example base class that other classes might need to extend
+abstract class BaseProcessor {
+    protected final String processorId;
+    
+    protected BaseProcessor(String processorId) {
+        this.processorId = processorId;
+    }
+    
+    abstract void process();
+}
+
+// Example classes that extend BaseProcessor and use logging
+class UserProcessor extends BaseProcessor {
+    private final LoggerCapability logger;
+    private final String userId;
+    
+    public UserProcessor(String processorId, String userId, String logFile) {
+        super(processorId);
+        this.logger = new LoggerComponent(logFile, "UserProcessor");
+        this.userId = userId;
+    }
+    
+    @Override
+    void process() {
+        // Processing logic
+        logger.writeToLog("Processing user: " + userId, "PROCESS");
+        validateUser();
+        updateUser();
+    }
+    
+    private void validateUser() {
+        logger.writeToLog("Validating user: " + userId, "VALIDATE");
+        // Validation logic
+    }
+    
+    private void updateUser() {
+        logger.writeToLog("Updating user: " + userId, "UPDATE");
+        // Update logic
+    }
+}
+
+class TransactionProcessor extends BaseProcessor {
+    private final LoggerCapability logger;
+    private final String transactionId;
+    private final double amount;
+    
+    public TransactionProcessor(String processorId, String transactionId, double amount, String logFile) {
+        super(processorId);
+        this.logger = new LoggerComponent(logFile, "TransactionProcessor");
+        this.transactionId = transactionId;
+        this.amount = amount;
+    }
+    
+    @Override
+    void process() {
+        logger.writeToLog("Processing transaction: " + transactionId, "PROCESS");
+        validateTransaction();
+        executeTransaction();
+    }
+    
+    private void validateTransaction() {
+        logger.writeToLog(
+            String.format("Validating transaction: %s, Amount: %.2f", transactionId, amount),
+            "VALIDATE"
+        );
+        // Validation logic
+    }
+    
+    private void executeTransaction() {
+        logger.writeToLog(
+            String.format("Executing transaction: %s, Amount: %.2f", transactionId, amount),
+            "EXECUTE"
+        );
+        // Execution logic
+    }
+}
+
+// Example showing how to use the system in a multi-threaded environment
+class RequestProcessor {
+    public static void main(String[] args) {
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        
+        // Simulate multiple requests
+        for (int i = 0; i < 5; i++) {
+            final int requestId = i;
+            executor.submit(() -> processRequest(requestId));
+        }
+        
+        executor.shutdown();
+        try {
+            executor.awaitTermination(1, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        FileWriterFactory.shutdownAll();
+    }
+    
+    private static void processRequest(int requestId) {
+        String requestContext = "Request-" + requestId;
+        ThreadContext.setContext(requestContext);
+        String logFile = "request_" + requestId + ".log";
+        
+        try {
+            // Process user
+            UserProcessor userProcessor = new UserProcessor(
+                "PROC-" + requestId,
+                "USER-" + requestId,
+                logFile
+            );
+            userProcessor.process();
+            
+            // Process transaction
+            TransactionProcessor transactionProcessor = new TransactionProcessor(
+                "PROC-" + requestId,
+                "TXN-" + requestId,
+                100.0 * requestId,
+                logFile
+            );
+            transactionProcessor.process();
+            
+        } finally {
+            ThreadContext.clear();
+        }
+    }
+}
+
+// FileWriterFactory and FileWriterManager remain the same as in previous example
+class FileWriterFactory {
+    private static final Map<String, FileWriterManager> managers = new ConcurrentHashMap<>();
+    
+    public static synchronized FileWriterManager getManager(String filePath) {
+        return managers.computeIfAbsent(filePath, FileWriterManager::new);
+    }
+    
+    public static void shutdownAll() {
+        managers.values().forEach(FileWriterManager::shutdown);
+        managers.clear();
+    }
+}
+
+class FileWriterManager {
+    private static final int BATCH_SIZE = 1000;
+    private static final long FLUSH_INTERVAL_MS = 5000;
+    
+    private final String filePath;
+    private final BlockingQueue<String> writeQueue;
+    private final StringBuilder contentBuffer;
+    private volatile boolean isRunning;
+    private final Thread writerThread;
+    
+    FileWriterManager(String filePath) {
+        this.filePath = filePath;
+        this.writeQueue = new LinkedBlockingQueue<>();
+        this.contentBuffer = new StringBuilder();
+        this.isRunning = true;
+        this.writerThread = initializeWriterThread();
+        this.writerThread.start();
+    }
+    
+    // ... rest of the FileWriterManager implementation remains the same ...
+}
+
+-----------------------------------------------
+
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.concurrent.*;
+import java.util.Map;
+
+// Factory class to manage multiple FileWriterManager instances
+class FileWriterFactory {
+    private static final Map<String, FileWriterManager> managers = new ConcurrentHashMap<>();
+    
+    public static synchronized FileWriterManager getManager(String filePath) {
+        return managers.computeIfAbsent(filePath, FileWriterManager::new);
+    }
+    
+    public static void shutdownAll() {
+        managers.values().forEach(FileWriterManager::shutdown);
+        managers.clear();
+    }
+    
+    public static void shutdownManager(String filePath) {
+        FileWriterManager manager = managers.remove(filePath);
+        if (manager != null) {
+            manager.shutdown();
+        }
+    }
+}
+
+// Individual file writer manager for each file
+class FileWriterManager {
+    private static final int BATCH_SIZE = 1000;
+    private static final long FLUSH_INTERVAL_MS = 5000;
+    
+    private final String filePath;
+    private final BlockingQueue<String> writeQueue;
+    private final StringBuilder contentBuffer;
+    private volatile boolean isRunning;
+    private final Thread writerThread;
+    
+    FileWriterManager(String filePath) {
+        this.filePath = filePath;
+        this.writeQueue = new LinkedBlockingQueue<>();
+        this.contentBuffer = new StringBuilder();
+        this.isRunning = true;
+        this.writerThread = initializeWriterThread();
+        this.writerThread.start();
+    }
+    
+    private Thread initializeWriterThread() {
+        return new Thread(() -> {
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(filePath, true))) {
+                while (isRunning || !writeQueue.isEmpty()) {
+                    processQueuedContent(writer);
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }, "FileWriter-" + filePath);
+    }
+    
+    private void processQueuedContent(BufferedWriter writer) throws IOException {
+        long startTime = System.currentTimeMillis();
+        int processedItems = 0;
+        
+        while (processedItems < BATCH_SIZE) {
+            String content = null;
+            try {
+                content = writeQueue.poll(100, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            
+            if (content != null) {
+                contentBuffer.append(content).append("\n");
+                processedItems++;
+            }
+            
+            long currentTime = System.currentTimeMillis();
+            if (content == null || 
+                currentTime - startTime >= FLUSH_INTERVAL_MS || 
+                processedItems >= BATCH_SIZE) {
+                
+                if (contentBuffer.length() > 0) {
+                    writer.write(contentBuffer.toString());
+                    writer.flush();
+                    contentBuffer.setLength(0);
+                }
+                break;
+            }
+        }
+    }
+    
+    public void writeContent(String content) {
+        if (isRunning) {
+            try {
+                writeQueue.put(content);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+    
+    public void shutdown() {
+        isRunning = false;
+        try {
+            writerThread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}
+
+// Abstract base class for all loggers
+public abstract class AbstractLogger {
+    protected final FileWriterManager fileWriter;
+    protected final String filePath;
+    
+    protected AbstractLogger(String filePath) {
+        this.filePath = filePath;
+        this.fileWriter = FileWriterFactory.getManager(filePath);
+    }
+    
+    protected void writeContent(String content) {
+        fileWriter.writeContent(formatContent(content));
+    }
+    
+    protected abstract String formatContent(String content);
+}
+
+// Example logger implementations
+class UserActivityLogger extends AbstractLogger {
+    public UserActivityLogger(String filePath) {
+        super(filePath);
+    }
+    
+    @Override
+    protected String formatContent(String content) {
+        return String.format("[User Activity][%s] %s - %s",
+            Thread.currentThread().getName(),
+            java.time.LocalDateTime.now(),
+            content);
+    }
+    
+    public void logLogin(String userId) {
+        writeContent("User " + userId + " logged in");
+    }
+}
+
+class SystemMetricsLogger extends AbstractLogger {
+    public SystemMetricsLogger(String filePath) {
+        super(filePath);
+    }
+    
+    @Override
+    protected String formatContent(String content) {
+        return String.format("[System Metrics][%s] %s - %s",
+            Thread.currentThread().getName(),
+            java.time.LocalDateTime.now(),
+            content);
+    }
+    
+    public void logMemoryUsage(long usedMemory, long totalMemory) {
+        writeContent(String.format("Memory Usage: %d/%d MB",
+            usedMemory / (1024 * 1024),
+            totalMemory / (1024 * 1024)));
+    }
+}
+
+// Example usage demonstrating multi-threaded, multi-file logging
+class MultiThreadedLoggingExample {
+    public static void main(String[] args) {
+        // Create two threads that will write to different files
+        Thread thread1 = new Thread(() -> {
+            String file1 = "file1.log";
+            UserActivityLogger userLogger1 = new UserActivityLogger(file1);
+            SystemMetricsLogger systemLogger1 = new SystemMetricsLogger(file1);
+            
+            for (int i = 0; i < 100; i++) {
+                userLogger1.logLogin("user" + i);
+                systemLogger1.logMemoryUsage(1000000000L, 2000000000L);
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            
+            FileWriterFactory.shutdownManager(file1);
+        }, "Thread-1");
+
+        Thread thread2 = new Thread(() -> {
+            String file2 = "file2.log";
+            UserActivityLogger userLogger2 = new UserActivityLogger(file2);
+            SystemMetricsLogger systemLogger2 = new SystemMetricsLogger(file2);
+            
+            for (int i = 0; i < 100; i++) {
+                userLogger2.logLogin("user" + (i + 1000));
+                systemLogger2.logMemoryUsage(1500000000L, 3000000000L);
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            
+            FileWriterFactory.shutdownManager(file2);
+        }, "Thread-2");
+
+        // Start both threads
+        thread1.start();
+        thread2.start();
+
+        // Wait for both threads to complete
+        try {
+            thread1.join();
+            thread2.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Shutdown all managers (optional, as we've already shut down individual managers)
+        FileWriterFactory.shutdownAll();
+    }
+}
