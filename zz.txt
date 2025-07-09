@@ -1,0 +1,190 @@
+import asyncio
+import json
+import time
+from typing import Dict, Any
+
+import rx
+from rx import operators as ops
+from rx.scheduler.eventloop import AsyncIOScheduler
+import aiohttp
+from aiohttp import web
+
+# --- Library Code (To be part of your SDK) ---
+
+class StreamingClient:
+    """
+    A client for consuming streaming data from an API endpoint using RxPy.
+
+    This client is designed to connect to a server that provides a stream of
+    data (e.g., tokens from a language model) over an HTTP connection. It
+    exposes the stream as an RxPy Observable, allowing for powerful,
+    declarative manipulation of the data stream.
+    """
+
+    def __init__(self, base_url: str, loop: asyncio.AbstractEventLoop = None):
+        """
+        Initializes the StreamingClient.
+
+        Args:
+            base_url (str): The base URL of the streaming API endpoint.
+            loop (asyncio.AbstractEventLoop, optional): The asyncio event loop to use.
+                                                        If None, the running loop is used.
+        """
+        if not base_url:
+            raise ValueError("base_url cannot be empty.")
+        self.base_url = base_url
+        self._loop = loop or asyncio.get_running_loop()
+        self._session = aiohttp.ClientSession(loop=self._loop)
+
+    def stream_prompt_response(self, endpoint: str, payload: Dict[str, Any]) -> rx.Observable:
+        """
+        Creates an observable stream for a given prompt/payload.
+
+        This method sends a POST request to the specified endpoint and wraps
+        the streaming response in an RxPy Observable. Each item emitted by the
+        observable is a chunk of data from the stream.
+
+        Args:
+            endpoint (str): The specific API endpoint to hit (e.g., '/generate').
+            payload (Dict[str, Any]): The JSON payload to send, typically
+                                     containing the prompt and other parameters.
+
+        Returns:
+            rx.Observable: An observable that emits data chunks from the response.
+        """
+        url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+
+        def subscribe(observer, scheduler):
+            """The function that is called when the observable is subscribed to."""
+            async def get_stream():
+                try:
+                    async with self._session.post(url, json=payload) as response:
+                        response.raise_for_status()  # Raise an exception for bad status codes
+
+                        # Process the response stream chunk by chunk
+                        async for chunk in response.content.iter_any():
+                            if chunk:
+                                # In a real-world scenario, you might want to parse
+                                # Server-Sent Events (SSE) or decode JSON chunks here.
+                                observer.on_next(chunk)
+
+                        # Once the stream is fully consumed, complete the observable
+                        observer.on_completed()
+
+                except Exception as e:
+                    # Propagate any exceptions to the observer
+                    observer.on_error(e)
+
+            # Schedule the async task on the event loop
+            return asyncio.create_task(get_stream())
+
+        # We use AsyncIOScheduler to bridge the async world with RxPy
+        return rx.create(subscribe).pipe(
+            ops.subscribe_on(AsyncIOScheduler(loop=self._loop))
+        )
+
+    async def close(self):
+        """Closes the underlying aiohttp client session."""
+        if not self._session.closed:
+            await self._session.close()
+
+# --- Example Usage (Demonstrates how a user would use your SDK) ---
+
+async def mock_streaming_server(request):
+    """
+    A simple mock server that simulates a streaming LLM response.
+    It streams back a sentence, word by word, with a small delay.
+    """
+    print("\n[Server] Received request. Starting stream...")
+    response = web.StreamResponse(
+        status=200,
+        reason='OK',
+        headers={'Content-Type': 'text/plain'},
+    )
+    await response.prepare(request)
+
+    sentence = "This is a simulated stream from a large language model. "
+    words = sentence.split()
+
+    try:
+        for i, word in enumerate(words):
+            chunk = f"{word} "
+            print(f"[Server] Sending chunk {i+1}: '{chunk.strip()}'")
+            await response.write(chunk.encode('utf-8'))
+            await asyncio.sleep(0.2)  # Simulate network latency/generation time
+
+        await response.write_eof()
+        print("[Server] Stream finished.")
+        return response
+
+    except asyncio.CancelledError:
+        print("[Server] Client disconnected. Stopping stream.")
+        raise
+
+async def main():
+    """
+    Main function to set up the mock server and run the client example.
+    """
+    # --- Server Setup ---
+    app = web.Application()
+    app.router.add_post('/generate', mock_streaming_server)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, 'localhost', 8080)
+    await site.start()
+    print("[System] Mock server started at http://localhost:8080")
+
+    # --- Client Setup ---
+    client = StreamingClient(base_url="http://localhost:8080")
+    prompt_payload = {
+        "prompt": "Tell me a story about a reactive fox.",
+        "tokens": 100
+    }
+
+    print("\n[Client] Subscribing to the prompt response stream...")
+
+    # Use a list to accumulate results for final display
+    full_response = []
+    done_event = asyncio.Event()
+
+    # Subscribe to the observable
+    disposable = client.stream_prompt_response('/generate', prompt_payload).pipe(
+        ops.map(lambda chunk: chunk.decode('utf-8')), # Decode bytes to string
+    ).subscribe(
+        on_next=lambda data: (
+            print(f"[Client] Received data: '{data}'"),
+            full_response.append(data)
+        ),
+        on_error=lambda e: (
+            print(f"[Client] An error occurred: {e}"),
+            done_event.set()
+        ),
+        on_completed=lambda: (
+            print("\n[Client] Stream completed."),
+            done_event.set()
+        )
+    )
+
+    # Wait for the stream to complete
+    await done_event.wait()
+
+    print("\n--- Final Assembled Response ---")
+    print("".join(full_response))
+    print("--------------------------------\n")
+
+
+    # --- Cleanup ---
+    disposable.dispose()  # Clean up the subscription
+    await client.close()
+    await runner.cleanup()
+    print("[System] Client and server shut down.")
+
+
+if __name__ == "__main__":
+    # To run this example, you need to have aiohttp and rxpy installed:
+    # pip install aiohttp rxpy
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[System] Shutting down.")
+
