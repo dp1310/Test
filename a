@@ -1,0 +1,30 @@
+# === Install latest Python 3.13.7 on Debian 12 via pyenv ===
+
+# 1. Install build dependencies
+sudo apt update
+sudo apt install -y git make build-essential libssl-dev zlib1g-dev \
+  libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm \
+  libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
+  libffi-dev liblzma-dev python3-openssl
+
+# 2. Install pyenv
+git clone https://github.com/pyenv/pyenv.git ~/.pyenv
+
+# 3. Configure shell
+echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
+echo 'export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
+echo -e 'eval "$(pyenv init --path)"\neval "$(pyenv init -)"' >> ~/.bashrc
+
+# 4. Reload shell
+exec "$SHELL"
+
+# 5. Install latest Python
+pyenv install 3.13.7
+pyenv global 3.13.7
+
+# 6. Upgrade pip/setuptools/wheel
+python -m pip install --upgrade pip setuptools wheel
+
+# 7. Confirm
+python --version
+pip --version
